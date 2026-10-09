@@ -8,6 +8,7 @@ from documents.pdf_processor import extract_pdf_text
 from extraction.extractor import extract_invoice
 from extraction.validator import validate_invoice
 
+from database.connection import get_db_connection
 
 app = FastAPI(title="AI Business Assistant")
 
@@ -15,9 +16,30 @@ app = FastAPI(title="AI Business Assistant")
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+
+@app.get("/api/db/health")
+def database_health():
+    """Verify that the API can connect to PostgreSQL."""
+
+    try:
+        # Open and close the connection safely.
+        with get_db_connection() as conn:
+            result = conn.execute(
+                "SELECT current_database()"
+            ).fetchone()
+
+        return {
+            "connected": True,
+            "database": result[0]
+        }
+
+    except Exception:
+        # Avoid exposing database credentials or internal errors.
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection failed."
+        )
+
 
 
 @app.post("/api/documents/extract")
