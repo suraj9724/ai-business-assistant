@@ -2,6 +2,7 @@ import os
 import tempfile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from documents.pdf_processor import extract_pdf_text
 
@@ -12,6 +13,15 @@ from database.connection import get_db_connection
 from database.comparison import compare_invoice_with_database
 
 app = FastAPI(title="AI Business Assistant")
+
+# Enable CORS for frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Limit uploads to 10 MB for this initial milestone.
 MAX_FILE_SIZE = 10 * 1024 * 1024

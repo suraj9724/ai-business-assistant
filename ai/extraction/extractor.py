@@ -21,46 +21,59 @@ MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 import re
 
 def extract_labelled_fields(text: str) -> dict:
-    """Extract clearly labelled invoice fields directly from PDF text."""
+    """Extract clearly labelled invoice fields from PDF text."""
 
     fields = {}
 
-    # Extract invoice number and date from their explicit labels.
-    invoice_number = re.search(
-        r"(?im)^\s*Invoice Number:\s*(\S+)",
-        text
-    )
-    invoice_date = re.search(
-        r"(?im)^\s*Invoice Date:\s*(.+?)\s*$",
-        text
-    )
-    currency = re.search(
-        r"(?im)^\s*Currency:\s*([A-Z]{3})\b",
-        text
-    )
+    # Match a label and its value whether they appear on the same
+    # line or on separate lines.
+    def get_label_value(label_pattern: str):
+        pattern = (
+            rf"(?im)^\s*(?:{label_pattern})\s*:?\s*"
+            rf"(?:\n\s*)?([^\n]+?)\s*$"
+        )
+        match = re.search(pattern, text)
+        return match.group(1).strip() if match else None
 
+    # Invoice number
+    invoice_number = get_label_value(r"Invoice Number")
     if invoice_number:
-        fields["invoice_number"] = invoice_number.group(1).strip()
+        fields["invoice_number"] = invoice_number
 
+    # Invoice date
+    invoice_date = get_label_value(r"Invoice Date")
     if invoice_date:
-        fields["invoice_date"] = invoice_date.group(1).strip()
+        fields["invoice_date"] = invoice_date
 
-    if currency:
-        fields["currency"] = currency.group(1)
+    # Currency
+    currency_value = get_label_value(r"Currency")
+    if currency_value:
+        currency_match = re.search(r"\b([A-Z]{3})\b", currency_value)
+        if currency_match:
+            fields["currency"] = currency_match.group(1)
 
-    # Extract amounts printed immediately after summary labels.
-    # This supports a currency symbol on the same line or next line.
+    # Extract amounts from the line following each summary label.
     amount_patterns = {
-        "subtotal": r"(?im)^\s*Subtotal\s*\n\s*[^\d\n]*([\d,]+(?:\.\d{2})?)",
-        "tax": r"(?im)^\s*GST(?:\s*\([^)]+\))?\s*\n\s*[^\d\n]*([\d,]+(?:\.\d{2})?)",
-        "total": r"(?im)^\s*Total\s*\n\s*[^\d\n]*([\d,]+(?:\.\d{2})?)",
+        "subtotal": (
+            r"(?im)^\s*Subtotal\s*:?\s*\n\s*"
+            r"(?:INR|USD|EUR|GBP|₹|\$)?\s*"
+            r"([\d,]+(?:\.\d{2})?)\s*$"
+        ),
+        "tax": (
+            r"(?im)^\s*GST(?:\s*\([^)]+\))?\s*:?\s*\n\s*"
+            r"(?:INR|USD|EUR|GBP|₹|\$)?\s*"
+            r"([\d,]+(?:\.\d{2})?)\s*$"
+        ),
+        "total": (
+            r"(?im)^\s*Total(?:\s+Amount)?\s*:?\s*\n\s*"
+            r"(?:INR|USD|EUR|GBP|₹|\$)?\s*"
+            r"([\d,]+(?:\.\d{2})?)\s*$"
+        ),
     }
 
     for field, pattern in amount_patterns.items():
         match = re.search(pattern, text)
-
         if match:
-            # Remove thousands separators before converting to a number.
             fields[field] = float(match.group(1).replace(",", ""))
 
     return fields
