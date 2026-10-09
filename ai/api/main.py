@@ -9,6 +9,7 @@ from extraction.extractor import extract_invoice
 from extraction.validator import validate_invoice
 
 from database.connection import get_db_connection
+from database.comparison import compare_invoice_with_database
 
 app = FastAPI(title="AI Business Assistant")
 
@@ -167,3 +168,100 @@ async def extract_invoice_endpoint(file: UploadFile = File(...)):
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+
+@app.post("/api/documents/compare-invoice")
+async def compare_uploaded_invoice(file: UploadFile = File(...)):
+    """Extract, validate, and compare an uploaded invoice with PostgreSQL."""
+
+    # Accept PDF files only.
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=415,
+            detail="Only PDF files are supported."
+        )
+
+    temp_path = None
+
+    try:
+        # Read at most 10 MB plus one byte to detect oversized uploads.
+        content = await file.read(MAX_FILE_SIZE + 1)
+
+        if not content:
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded file is empty."
+            )
+
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="The PDF exceeds the 10 MB limit."
+            )
+
+        # Save temporarily because the PDF processor reads from a file path.
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf",
+            delete=False
+        ) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(content)
+
+        # Step 1: Extract text from the PDF.
+        document = extract_pdf_text(temp_path)
+
+        if not document["full_text"].strip():
+            raise HTTPException(
+                status_code=422,
+                detail="No readable text was found in the PDF."
+            )
+
+        # Step 2: Extract structured invoice data.
+        invoice = extract_invoice(document["full_text"])
+
+        # Step 3: Validate the extracted invoice independently.
+        validation = validate_invoice(invoice)
+
+       
+        # Step 4: Compare extracted values with database records.
+        comparison = compare_invoice_with_database(invoice)
+
+        # Step 5: Determine the overall outcome.
+        # Accept an invoice only when validation passes and the database
+        # comparison is a complete match.
+        overall_status = (
+            "accepted"
+            if validation["status"] == "accepted"
+            and comparison["status"] == "matched"
+            else "needs_review"
+        )
+
+        # Return the overall decision plus detailed diagnostic results.
+        return {
+            "page_count": document["page_count"],
+            "overall_status": overall_status,
+            "validation_status": validation["status"],
+            "comparison_status": comparison["status"],
+            "invoice": invoice.model_dump(mode="json"),
+            "validation": validation,
+            "comparison": comparison,
+        }
+
+
+    except HTTPException:
+        # Preserve intentional HTTP errors raised above.
+        raise
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc)
+        ) from exc
+
+    finally:
+        # Always remove the temporary file, including on failure.
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        await file.close()
