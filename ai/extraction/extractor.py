@@ -79,27 +79,101 @@ def extract_labelled_fields(text: str) -> dict:
     return fields
 
 
+
+def extract_line_items(text: str) -> list[dict]:
+    """Extract line items from a clearly structured PDF text table."""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    items = []
+
+    def parse_number(value: str):
+        """Convert a printed number into a float, or return None."""
+        value = re.sub(r"^(INR|USD|EUR|GBP|₹|\$)\s*", "", value.strip())
+        value = value.replace(",", "")
+
+        if not re.fullmatch(r"-?\d+(?:\.\d+)?", value):
+            return None
+
+        return float(value)
+
+    i = 0
+
+    while i < len(lines):
+        # A standalone integer may indicate the item row number.
+        if not re.fullmatch(r"\d+", lines[i]):
+            i += 1
+            continue
+
+        description_index = i + 1
+
+        # We need a description followed by quantity, unit price,
+        # and amount. Skip headings or incomplete rows.
+        if description_index >= len(lines):
+            break
+
+        description = lines[description_index]
+
+        # Skip a row if its description is actually a number.
+        if parse_number(description) is not None:
+            i += 1
+            continue
+
+        numeric_values = []
+        j = description_index + 1
+
+        while j < len(lines) and len(numeric_values) < 3:
+            number = parse_number(lines[j])
+
+            if number is None:
+                break
+
+            numeric_values.append(number)
+            j += 1
+
+        if len(numeric_values) == 3:
+            quantity, unit_price, amount = numeric_values
+
+            items.append({
+                "description": description,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "amount": amount,
+            })
+
+            i = j
+        else:
+            i += 1
+
+    return items
+
+
+
 def extract_party_names(text: str) -> dict:
-    """Extract supplier and customer names from labelled invoice sections."""
+    """Extract supplier and customer names from invoice text."""
+
     fields = {}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    # The supplier appears at the start of this sample invoice.
-    supplier = re.search(
-        r"(?m)^\s*(NorthStar Software Solutions Pvt\. Ltd\.)\s*$",
-        text
-    )
+    # The supplier is the company name near the beginning,
+    # before the TAX INVOICE heading.
+    for i, line in enumerate(lines):
+        if re.search(r"\bTAX\s+INVOICE\b", line, re.IGNORECASE):
+            if i > 0:
+                candidate = lines[i - 1]
+                if not re.search(
+                    r"invoice|bill|date|number",
+                    candidate,
+                    re.IGNORECASE,
+                ):
+                    fields["supplier_name"] = candidate
+            break
 
-    # The customer appears immediately after the Bill To heading.
-    customer = re.search(
-        r"(?m)^Bill To\s*\n\s*(.+?)\s*$",
-        text
-    )
-
-    if supplier:
-        fields["supplier_name"] = supplier.group(1).strip()
-
-    if customer:
-        fields["customer_name"] = customer.group(1).strip()
+    # The customer appears after the Bill To heading.
+    for i, line in enumerate(lines):
+        if re.fullmatch(r"Bill To\s*:?", line, re.IGNORECASE):
+            if i + 1 < len(lines):
+                fields["customer_name"] = lines[i + 1]
+            break
 
     return fields
 
@@ -167,14 +241,25 @@ def extract_invoice(text: str) -> Invoice:
     # Validate the LLM response against our Invoice schema.
     invoice = Invoice.model_validate(extracted_data)
 
-    # Extract clearly labelled fields directly from the PDF text.
+    
+    # Extract clearly labelled fields directly from PDF text.
     labelled_fields = extract_labelled_fields(text)
     party_fields = extract_party_names(text)
 
-    # Merge only fields that were actually found in the document.
+    # Prefer deterministic line items when the PDF table is readable.
+    # Otherwise, retain the items extracted by the LLM.
+    parsed_items = extract_line_items(text)
+
     updates = {**labelled_fields, **party_fields}
 
-    invoice = invoice.model_copy(update=updates)
+    if parsed_items:
+        updates["items"] = parsed_items
+
+    # Revalidate the merged data, including nested invoice items.
+    invoice_data = invoice.model_dump()
+    invoice_data.update(updates)
+
+    invoice = Invoice.model_validate(invoice_data)
 
     return invoice
 

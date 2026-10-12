@@ -142,13 +142,15 @@ def validate_invoice(invoice: Invoice) -> dict:
     # 5. Decide whether the invoice needs manual review.
     # --------------------------------------------------
 
+    
+    # An invoice cannot be accepted if required financial data
+    # or line-item details are missing or inconsistent.
+    needs_review = bool(errors or warnings)
+
     return {
-        "is_valid": len(errors) == 0,
-        "status": (
-            "needs_review"
-            if errors or warnings
-            else "accepted"
-        ),
+        "is_valid": not needs_review,
+        "status": "needs_review" if needs_review else "accepted",
         "errors": errors,
         "warnings": warnings,
     }
+
